@@ -50,6 +50,7 @@ export function AuditClient({ initialActions }: AuditClientProps) {
       rejected: 'bg-red-100 text-red-800',
       rescheduled: 'bg-blue-100 text-blue-800',
       reassigned: 'bg-purple-100 text-purple-800',
+      needs_callback: 'bg-blue-100 text-blue-800',
     }
 
     return (
