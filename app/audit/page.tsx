@@ -3,6 +3,9 @@ import { MeetingAction } from '@/lib/types'
 import Link from 'next/link'
 import { AuditClient } from './AuditClient'
 
+export const dynamic = 'force-dynamic'
+export const revalidate = 0
+
 export default async function AuditPage() {
   // Fetch all meeting actions, sorted by most recent first
   const { data: actions, error } = await supabase

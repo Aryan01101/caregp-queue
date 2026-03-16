@@ -4,12 +4,15 @@ import { SimulateButton } from './SimulateButton'
 import { QueueClient } from './QueueClient'
 import Link from 'next/link'
 
+export const dynamic = 'force-dynamic'
+export const revalidate = 0
+
 export default async function QueuePage() {
-  // Fetch pending and auto-confirmed meeting requests
+  // Fetch pending, auto-confirmed, and needs_callback meeting requests
   const { data: requests, error } = await supabase
     .from('meeting_requests')
     .select('*')
-    .in('status', ['pending', 'auto_confirmed'])
+    .in('status', ['pending', 'auto_confirmed', 'needs_callback'])
     .order('created_at', { ascending: true })
 
   if (error) {
