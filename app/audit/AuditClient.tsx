@@ -19,7 +19,7 @@ export function AuditClient({ initialActions }: AuditClientProps) {
     const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
     // Subscribe to changes on meeting_actions table
-    const channel = supabase
+    const actionsChannel = supabase
       .channel('meeting_actions_changes')
       .on(
         'postgres_changes',
@@ -40,7 +40,7 @@ export function AuditClient({ initialActions }: AuditClientProps) {
 
     // Cleanup subscription on unmount
     return () => {
-      supabase.removeChannel(channel)
+      supabase.removeChannel(actionsChannel)
     }
   }, [])
 
@@ -141,7 +141,9 @@ export function AuditClient({ initialActions }: AuditClientProps) {
                     {action.patient_name}
                   </td>
                   <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">
-                    {action.doctor_name}
+                    {action.action === 'reassigned' && action.new_doctor
+                      ? action.new_doctor
+                      : action.doctor_name}
                   </td>
                   <td className="px-4 py-4 whitespace-nowrap text-sm text-gray-700">
                     {new Date(action.requested_time).toLocaleString('en-US', {

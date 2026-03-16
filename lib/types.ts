@@ -4,7 +4,9 @@ export type MeetingRequest = {
   doctor_name: string
   requested_time: string
   reason_for_visit: string
-  status: 'pending' | 'approved' | 'rejected' | 'rescheduled'
+  status: 'pending' | 'approved' | 'rejected' | 'rescheduled' | 'auto_confirmed' | 'needs_callback'
+  confidence_score: number
+  flag_reason: string | null
   created_at: string
   updated_at: string
 }
@@ -16,7 +18,7 @@ export type MeetingAction = {
   doctor_name: string
   requested_time: string
   reason_for_visit: string
-  action: 'approved' | 'rejected' | 'rescheduled' | 'reassigned'
+  action: 'approved' | 'rejected' | 'rescheduled' | 'reassigned' | 'needs_callback'
   acted_by: string
   new_time?: string
   new_doctor?: string
@@ -32,6 +34,8 @@ export type Database = {
           id?: string
           created_at?: string
           updated_at?: string
+          confidence_score?: number
+          flag_reason?: string | null
         }
         Update: Partial<Omit<MeetingRequest, 'id' | 'created_at' | 'updated_at'>>
       }

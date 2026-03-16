@@ -5,11 +5,11 @@ import { QueueClient } from './QueueClient'
 import Link from 'next/link'
 
 export default async function QueuePage() {
-  // Fetch pending meeting requests
+  // Fetch pending and auto-confirmed meeting requests
   const { data: requests, error } = await supabase
     .from('meeting_requests')
     .select('*')
-    .eq('status', 'pending')
+    .in('status', ['pending', 'auto_confirmed'])
     .order('created_at', { ascending: true })
 
   if (error) {
@@ -28,7 +28,7 @@ export default async function QueuePage() {
     )
   }
 
-  const pendingRequests = requests as MeetingRequest[]
+  const queueRequests = requests as MeetingRequest[]
 
   return (
     <div className="min-h-screen bg-gray-50 p-8">
@@ -48,7 +48,7 @@ export default async function QueuePage() {
           </div>
         </div>
 
-        <QueueClient initialRequests={pendingRequests} />
+        <QueueClient initialRequests={queueRequests} />
       </div>
     </div>
   )
