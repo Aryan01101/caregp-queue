@@ -1,52 +1,52 @@
 'use client'
 
-import { RefillRequest } from '@/lib/types'
+import { MeetingRequest } from '@/lib/types'
 import { createClient } from '@supabase/supabase-js'
 import { useEffect, useState } from 'react'
-import { ApproveButton } from './ApproveButton'
+import { MeetingActions } from './MeetingActions'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 
 type QueueClientProps = {
-  initialRequests: RefillRequest[]
+  initialRequests: MeetingRequest[]
 }
 
 export function QueueClient({ initialRequests }: QueueClientProps) {
-  const [requests, setRequests] = useState<RefillRequest[]>(initialRequests)
+  const [requests, setRequests] = useState<MeetingRequest[]>(initialRequests)
 
   useEffect(() => {
     // Create client-side Supabase client for Realtime
     const supabase = createClient(supabaseUrl, supabaseAnonKey)
 
-    // Subscribe to changes on refill_requests table
+    // Subscribe to changes on meeting_requests table
     const channel = supabase
-      .channel('refill_requests_changes')
+      .channel('meeting_requests_changes')
       .on(
         'postgres_changes',
         {
           event: '*', // Listen to all events (INSERT, UPDATE, DELETE)
           schema: 'public',
-          table: 'refill_requests',
+          table: 'meeting_requests',
         },
         (payload) => {
           console.log('Realtime event:', payload)
 
           if (payload.eventType === 'INSERT') {
             // New request added
-            const newRequest = payload.new as RefillRequest
+            const newRequest = payload.new as MeetingRequest
             setRequests((current) => [...current, newRequest])
           } else if (payload.eventType === 'UPDATE') {
-            // Request updated (e.g., status changed to approved/rejected)
-            const updatedRequest = payload.new as RefillRequest
+            // Request updated (e.g., status changed, doctor reassigned)
+            const updatedRequest = payload.new as MeetingRequest
 
             if (updatedRequest.status !== 'pending') {
-              // Remove from pending queue
+              // Remove from pending queue if no longer pending
               setRequests((current) =>
                 current.filter((req) => req.id !== updatedRequest.id)
               )
             } else {
-              // Update in place
+              // Update in place if still pending (e.g., doctor reassigned)
               setRequests((current) =>
                 current.map((req) =>
                   req.id === updatedRequest.id ? updatedRequest : req
@@ -55,7 +55,7 @@ export function QueueClient({ initialRequests }: QueueClientProps) {
             }
           } else if (payload.eventType === 'DELETE') {
             // Request deleted
-            const deletedRequest = payload.old as RefillRequest
+            const deletedRequest = payload.old as MeetingRequest
             setRequests((current) =>
               current.filter((req) => req.id !== deletedRequest.id)
             )
@@ -75,7 +75,7 @@ export function QueueClient({ initialRequests }: QueueClientProps) {
       {requests.length === 0 ? (
         <div className="bg-white rounded-lg shadow-sm border border-gray-200 p-8 text-center">
           <p className="text-gray-500 text-lg">
-            No pending refill requests at this time.
+            No pending meeting requests at this time.
           </p>
         </div>
       ) : (
@@ -87,13 +87,13 @@ export function QueueClient({ initialRequests }: QueueClientProps) {
                   Patient Name
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Medication
+                  Doctor
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Dosage
+                  Requested Time
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Time Received
+                  Reason
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Actions
@@ -107,22 +107,23 @@ export function QueueClient({ initialRequests }: QueueClientProps) {
                     {request.patient_name}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                    {request.medication}
+                    {request.doctor_name}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
-                    {request.dosage}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {new Date(request.created_at).toLocaleString('en-US', {
+                    {new Date(request.requested_time).toLocaleString('en-US', {
                       month: 'short',
                       day: 'numeric',
+                      year: 'numeric',
                       hour: 'numeric',
                       minute: '2-digit',
                       hour12: true,
                     })}
                   </td>
+                  <td className="px-6 py-4 text-sm text-gray-700">
+                    {request.reason_for_visit}
+                  </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    <ApproveButton requestId={request.id} />
+                    <MeetingActions requestId={request.id} />
                   </td>
                 </tr>
               ))}
