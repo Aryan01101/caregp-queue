@@ -3,6 +3,12 @@
 import { supabase } from '@/lib/supabase'
 import { Database, MeetingRequest } from '@/lib/types'
 import { revalidatePath } from 'next/cache'
+import { z } from 'zod'
+
+// Validation schemas
+const uuidSchema = z.string().uuid('Invalid request ID format')
+const isoDateSchema = z.string().datetime('Invalid date format')
+const doctorNameSchema = z.string().min(1, 'Doctor name is required').max(100, 'Doctor name is too long')
 
 // Statuses that allow further actions (not final)
 const ACTIONABLE_STATUSES: MeetingRequest['status'][] = ['pending', 'rescheduled']
@@ -12,80 +18,90 @@ function isActionable(status: MeetingRequest['status']): boolean {
   return ACTIONABLE_STATUSES.includes(status)
 }
 
-const FAKE_REQUESTS = [
-  {
-    patient_name: 'James Morrison',
-    doctor_name: 'Dr. Patel',
-    requested_time: '2026-03-19T09:00:00',
-    reason_for_visit: 'Blood pressure checkup',
-    confidence_score: 0.62,
-    flag_reason: 'Patient was unclear about preferred doctor name',
-    status: 'pending' as const
-  },
-  {
-    patient_name: 'Sarah Chen',
-    doctor_name: 'Dr. Smith',
-    requested_time: '2026-03-20T14:00:00',
-    reason_for_visit: 'Annual checkup',
-    confidence_score: 0.78,
-    flag_reason: 'Time slot preference was ambiguous',
-    status: 'pending' as const
-  },
-  {
-    patient_name: 'David Nguyen',
-    doctor_name: 'Dr. Johnson',
-    requested_time: '2026-03-21T11:00:00',
-    reason_for_visit: 'Flu symptoms',
-    confidence_score: 0.91,
-    flag_reason: null,
-    status: 'auto_confirmed' as const
-  },
-  {
-    patient_name: 'Emily Tran',
-    doctor_name: 'Dr. Patel',
-    requested_time: '2026-03-22T10:00:00',
-    reason_for_visit: 'Diabetes management',
-    confidence_score: 0.95,
-    flag_reason: null,
-    status: 'auto_confirmed' as const
-  },
-  {
-    patient_name: 'Michael Wong',
-    doctor_name: 'Dr. Smith',
-    requested_time: '2026-03-23T15:00:00',
-    reason_for_visit: 'Skin condition review',
-    confidence_score: 0.88,
-    flag_reason: null,
-    status: 'auto_confirmed' as const
+// Helper function to generate random future date within the next 7 days
+function getRandomFutureDate(): string {
+  const now = new Date()
+  const daysAhead = Math.floor(Math.random() * 7) + 1 // 1-7 days ahead
+  const hoursOfDay = [9, 10, 11, 14, 15, 16] // Business hours
+  const randomHour = hoursOfDay[Math.floor(Math.random() * hoursOfDay.length)]
+
+  const futureDate = new Date(now)
+  futureDate.setDate(now.getDate() + daysAhead)
+  futureDate.setHours(randomHour, 0, 0, 0)
+
+  return futureDate.toISOString()
+}
+
+function generateFakeRequest() {
+  const templates = [
+    {
+      patient_name: 'James Morrison',
+      doctor_name: 'Dr. Patel',
+      reason_for_visit: 'Blood pressure checkup',
+      confidence_score: 0.62,
+      flag_reason: 'Patient was unclear about preferred doctor name',
+      status: 'pending' as const
+    },
+    {
+      patient_name: 'Sarah Chen',
+      doctor_name: 'Dr. Smith',
+      reason_for_visit: 'Annual checkup',
+      confidence_score: 0.78,
+      flag_reason: 'Time slot preference was ambiguous',
+      status: 'pending' as const
+    },
+    {
+      patient_name: 'David Nguyen',
+      doctor_name: 'Dr. Johnson',
+      reason_for_visit: 'Flu symptoms',
+      confidence_score: 0.91,
+      flag_reason: null,
+      status: 'auto_confirmed' as const
+    },
+    {
+      patient_name: 'Emily Tran',
+      doctor_name: 'Dr. Patel',
+      reason_for_visit: 'Diabetes management',
+      confidence_score: 0.95,
+      flag_reason: null,
+      status: 'auto_confirmed' as const
+    },
+    {
+      patient_name: 'Michael Wong',
+      doctor_name: 'Dr. Smith',
+      reason_for_visit: 'Skin condition review',
+      confidence_score: 0.88,
+      flag_reason: null,
+      status: 'auto_confirmed' as const
+    }
+  ]
+
+  const template = templates[Math.floor(Math.random() * templates.length)]
+  return {
+    ...template,
+    requested_time: getRandomFutureDate()
   }
-]
+}
 
 export async function simulateAgentRequest() {
-  // Randomly select one of the five fake requests
-  const randomRequest = FAKE_REQUESTS[Math.floor(Math.random() * FAKE_REQUESTS.length)]
+  const randomRequest = generateFakeRequest()
 
   // Insert the fake meeting request
   const { error } = await supabase
     .from('meeting_requests')
-    // @ts-ignore - Supabase type inference issue, works correctly at runtime
-    .insert(randomRequest)
+    .insert(randomRequest as any)
 
   if (error) {
-    console.error('Error simulating agent request:', error)
     throw new Error('Failed to simulate agent request')
   }
 
-  // Revalidate the queue page to show the new request
   revalidatePath('/queue')
-
-  return {
-    success: true,
-    patient: randomRequest.patient_name,
-    doctor: randomRequest.doctor_name,
-  }
 }
 
 export async function approveMeeting(requestId: string) {
+  // Validate input
+  uuidSchema.parse(requestId)
+
   // First, fetch the current request to check if it's actionable
   const { data: request, error: fetchError } = await supabase
     .from('meeting_requests')
@@ -108,14 +124,13 @@ export async function approveMeeting(requestId: string) {
   const { data: updated, error: updateError } = await supabase
     .from('meeting_requests')
     // @ts-ignore - Supabase type inference issue
-    .update({ status: 'approved', updated_at: new Date().toISOString() })
+    .update({ status: 'approved' })
     .eq('id', requestId)
     .eq('status', meetingRequest.status) // CRITICAL: Only update if status hasn't changed
     .select()
     .single()
 
   if (updateError) {
-    console.error('Approve: Update error', updateError)
     throw new Error(`Database error: ${updateError.message}`)
   }
 
@@ -138,7 +153,7 @@ export async function approveMeeting(requestId: string) {
   }
 
   // Write to audit log
-  const { error: auditError } = await supabase
+  await supabase
     .from('meeting_actions')
     // @ts-ignore - Supabase type inference issue
     .insert({
@@ -151,11 +166,6 @@ export async function approveMeeting(requestId: string) {
       acted_by: 'Staff',
     })
 
-  if (auditError) {
-    console.error('Failed to write audit log:', auditError)
-    // Don't throw - the approval still succeeded
-  }
-
   revalidatePath('/queue')
   revalidatePath('/audit')
 
@@ -163,6 +173,9 @@ export async function approveMeeting(requestId: string) {
 }
 
 export async function rejectMeeting(requestId: string) {
+  // Validate input
+  uuidSchema.parse(requestId)
+
   // First, fetch the current request to check if it's actionable
   const { data: request, error: fetchError } = await supabase
     .from('meeting_requests')
@@ -181,17 +194,17 @@ export async function rejectMeeting(requestId: string) {
   }
 
   // Update request status with conditional WHERE clause for concurrency safety
+  //
   const { data: updated, error: updateError } = await supabase
     .from('meeting_requests')
     // @ts-ignore - Supabase type inference issue
-    .update({ status: 'rejected', updated_at: new Date().toISOString() })
+    .update({ status: 'rejected' })
     .eq('id', requestId)
     .eq('status', meetingRequest.status) // CRITICAL: Only update if status hasn't changed
     .select()
     .single()
 
   if (updateError) {
-    console.error('Reject: Update error', updateError)
     throw new Error(`Database error: ${updateError.message}`)
   }
 
@@ -214,7 +227,7 @@ export async function rejectMeeting(requestId: string) {
   }
 
   // Write to audit log
-  const { error: auditError } = await supabase
+  await supabase
     .from('meeting_actions')
     // @ts-ignore - Supabase type inference issue
     .insert({
@@ -227,11 +240,6 @@ export async function rejectMeeting(requestId: string) {
       acted_by: 'Staff',
     })
 
-  if (auditError) {
-    console.error('Failed to write audit log:', auditError)
-    // Don't throw - the rejection still succeeded
-  }
-
   revalidatePath('/queue')
   revalidatePath('/audit')
 
@@ -239,6 +247,9 @@ export async function rejectMeeting(requestId: string) {
 }
 
 export async function needsCallbackMeeting(requestId: string) {
+  // Validate input
+  uuidSchema.parse(requestId)
+
   // First, fetch the current request to check if it's actionable
   const { data: request, error: fetchError } = await supabase
     .from('meeting_requests')
@@ -257,17 +268,17 @@ export async function needsCallbackMeeting(requestId: string) {
   }
 
   // Update request status with conditional WHERE clause for concurrency safety
+  //
   const { data: updated, error: updateError } = await supabase
     .from('meeting_requests')
     // @ts-ignore - Supabase type inference issue
-    .update({ status: 'needs_callback', updated_at: new Date().toISOString() })
+    .update({ status: 'needs_callback' })
     .eq('id', requestId)
     .eq('status', meetingRequest.status) // CRITICAL: Only update if status hasn't changed
     .select()
     .single()
 
   if (updateError) {
-    console.error('Needs Callback: Update error', updateError)
     throw new Error(`Database error: ${updateError.message}`)
   }
 
@@ -290,7 +301,7 @@ export async function needsCallbackMeeting(requestId: string) {
   }
 
   // Write to audit log
-  const { error: auditError } = await supabase
+  await supabase
     .from('meeting_actions')
     // @ts-ignore - Supabase type inference issue
     .insert({
@@ -303,11 +314,6 @@ export async function needsCallbackMeeting(requestId: string) {
       acted_by: 'Staff',
     })
 
-  if (auditError) {
-    console.error('Failed to write audit log:', auditError)
-    // Don't throw - the needs_callback still succeeded
-  }
-
   revalidatePath('/queue')
   revalidatePath('/audit')
 
@@ -315,6 +321,10 @@ export async function needsCallbackMeeting(requestId: string) {
 }
 
 export async function rescheduleMeeting(requestId: string, newTime: string) {
+  // Validate input
+  uuidSchema.parse(requestId)
+  isoDateSchema.parse(newTime)
+
   // First, fetch the current request to check if it's actionable
   const { data: request, error: fetchError } = await supabase
     .from('meeting_requests')
@@ -323,26 +333,23 @@ export async function rescheduleMeeting(requestId: string, newTime: string) {
     .single()
 
   if (fetchError || !request) {
-    console.error('Reschedule: Request not found', requestId, fetchError)
     throw new Error('Request not found')
   }
 
   const meetingRequest = request as MeetingRequest
-  console.log('Reschedule: Current status', meetingRequest.status)
 
   if (!isActionable(meetingRequest.status)) {
-    console.log('Reschedule: Not actionable, status is', meetingRequest.status)
     throw new Error('Request has already been finalized')
   }
 
   // Update request with new time and status rescheduled
+  //
   const { data: updated, error: updateError } = await supabase
     .from('meeting_requests')
     // @ts-ignore - Supabase type inference issue
     .update({
       requested_time: newTime,
       status: 'rescheduled',
-      updated_at: new Date().toISOString()
     })
     .eq('id', requestId)
     .eq('status', meetingRequest.status) // CRITICAL: Only update if status hasn't changed
@@ -350,12 +357,10 @@ export async function rescheduleMeeting(requestId: string, newTime: string) {
     .single()
 
   if (updateError) {
-    console.error('Reschedule: Update error', updateError)
     throw new Error(`Database error: ${updateError.message}`)
   }
 
   if (!updated) {
-    console.log('Reschedule: No rows updated. Status was:', meetingRequest.status)
     // This happens when status changed between our read and write (race condition)
     // Re-fetch to see current status
     const { data: currentRequest } = await supabase
@@ -368,7 +373,6 @@ export async function rescheduleMeeting(requestId: string, newTime: string) {
 
     if (current && current.status === 'rescheduled') {
       // Already rescheduled by another concurrent request - this is OK, silently succeed
-      console.log('Reschedule: Already rescheduled, returning success')
       return { success: true, alreadyProcessed: true }
     }
 
@@ -376,7 +380,7 @@ export async function rescheduleMeeting(requestId: string, newTime: string) {
   }
 
   // Write to audit log
-  const { error: auditError } = await supabase
+  await supabase
     .from('meeting_actions')
     // @ts-ignore - Supabase type inference issue
     .insert({
@@ -390,11 +394,6 @@ export async function rescheduleMeeting(requestId: string, newTime: string) {
       new_time: newTime,
     })
 
-  if (auditError) {
-    console.error('Failed to write audit log:', auditError)
-    // Don't throw - the reschedule still succeeded
-  }
-
   revalidatePath('/queue')
   revalidatePath('/audit')
 
@@ -402,6 +401,10 @@ export async function rescheduleMeeting(requestId: string, newTime: string) {
 }
 
 export async function reassignDoctor(requestId: string, newDoctor: string) {
+  // Validate input
+  uuidSchema.parse(requestId)
+  doctorNameSchema.parse(newDoctor)
+
   // First, fetch the current request to check if it's actionable
   const { data: request, error: fetchError } = await supabase
     .from('meeting_requests')
@@ -420,13 +423,13 @@ export async function reassignDoctor(requestId: string, newDoctor: string) {
   }
 
   // Update request with new doctor and set status to rescheduled (removes from pending queue)
+  //
   const { data: updated, error: updateError } = await supabase
     .from('meeting_requests')
     // @ts-ignore - Supabase type inference issue
     .update({
       doctor_name: newDoctor,
       status: 'rescheduled',
-      updated_at: new Date().toISOString()
     })
     .eq('id', requestId)
     .eq('status', meetingRequest.status) // CRITICAL: Only update if status hasn't changed
@@ -434,7 +437,6 @@ export async function reassignDoctor(requestId: string, newDoctor: string) {
     .single()
 
   if (updateError) {
-    console.error('Reassign: Update error', updateError)
     throw new Error(`Database error: ${updateError.message}`)
   }
 
@@ -457,7 +459,7 @@ export async function reassignDoctor(requestId: string, newDoctor: string) {
   }
 
   // Write to audit log
-  const { error: auditError } = await supabase
+  await supabase
     .from('meeting_actions')
     // @ts-ignore - Supabase type inference issue
     .insert({
@@ -470,11 +472,6 @@ export async function reassignDoctor(requestId: string, newDoctor: string) {
       acted_by: 'Staff',
       new_doctor: newDoctor,
     })
-
-  if (auditError) {
-    console.error('Failed to write audit log:', auditError)
-    // Don't throw - the reassignment still succeeded
-  }
 
   revalidatePath('/queue')
   revalidatePath('/audit')

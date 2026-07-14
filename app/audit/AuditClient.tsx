@@ -1,11 +1,8 @@
 'use client'
 
 import { MeetingAction } from '@/lib/types'
-import { createClient } from '@supabase/supabase-js'
-import { useEffect, useState } from 'react'
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+import { supabaseClient } from '@/lib/supabase-client'
+import { useEffect, useRef, useState } from 'react'
 
 type AuditClientProps = {
   initialActions: MeetingAction[]
@@ -13,13 +10,11 @@ type AuditClientProps = {
 
 export function AuditClient({ initialActions }: AuditClientProps) {
   const [actions, setActions] = useState<MeetingAction[]>(initialActions)
+  const channelRef = useRef<ReturnType<typeof supabaseClient.channel> | null>(null)
 
   useEffect(() => {
-    // Create client-side Supabase client for Realtime
-    const supabase = createClient(supabaseUrl, supabaseAnonKey)
-
     // Subscribe to changes on meeting_actions table
-    const actionsChannel = supabase
+    channelRef.current = supabaseClient
       .channel('meeting_actions_changes')
       .on(
         'postgres_changes',
@@ -29,8 +24,6 @@ export function AuditClient({ initialActions }: AuditClientProps) {
           table: 'meeting_actions',
         },
         (payload) => {
-          console.log('Realtime audit event:', payload)
-
           const newAction = payload.new as MeetingAction
           // Prepend new action to the top (most recent first)
           setActions((current) => [newAction, ...current])
@@ -40,7 +33,10 @@ export function AuditClient({ initialActions }: AuditClientProps) {
 
     // Cleanup subscription on unmount
     return () => {
-      supabase.removeChannel(actionsChannel)
+      if (channelRef.current) {
+        supabaseClient.removeChannel(channelRef.current)
+        channelRef.current = null
+      }
     }
   }, [])
 

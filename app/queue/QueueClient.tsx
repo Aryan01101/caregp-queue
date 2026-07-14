@@ -1,12 +1,9 @@
 'use client'
 
 import { MeetingRequest } from '@/lib/types'
-import { createClient } from '@supabase/supabase-js'
-import { useEffect, useState } from 'react'
+import { supabaseClient } from '@/lib/supabase-client'
+import { useEffect, useRef, useState } from 'react'
 import { MeetingActions } from './MeetingActions'
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 
 type QueueClientProps = {
   initialRequests: MeetingRequest[]
@@ -14,13 +11,11 @@ type QueueClientProps = {
 
 export function QueueClient({ initialRequests }: QueueClientProps) {
   const [requests, setRequests] = useState<MeetingRequest[]>(initialRequests)
+  const channelRef = useRef<ReturnType<typeof supabaseClient.channel> | null>(null)
 
   useEffect(() => {
-    // Create client-side Supabase client for Realtime
-    const supabase = createClient(supabaseUrl, supabaseAnonKey)
-
     // Subscribe to changes on meeting_requests table
-    const channel = supabase
+    channelRef.current = supabaseClient
       .channel('meeting_requests_changes')
       .on(
         'postgres_changes',
@@ -30,8 +25,6 @@ export function QueueClient({ initialRequests }: QueueClientProps) {
           table: 'meeting_requests',
         },
         (payload) => {
-          console.log('Realtime event:', payload)
-
           if (payload.eventType === 'INSERT') {
             // New request added
             const newRequest = payload.new as MeetingRequest
@@ -40,8 +33,13 @@ export function QueueClient({ initialRequests }: QueueClientProps) {
             // Request updated
             const updatedRequest = payload.new as MeetingRequest
 
-            if (updatedRequest.status !== 'pending' && updatedRequest.status !== 'auto_confirmed') {
-              // Remove from queue if no longer pending or auto-confirmed
+            if (
+              updatedRequest.status !== 'pending' &&
+              updatedRequest.status !== 'auto_confirmed' &&
+              updatedRequest.status !== 'needs_callback' &&
+              updatedRequest.status !== 'rescheduled'
+            ) {
+              // Remove from queue if status is approved, rejected, or other final states
               setRequests((current) =>
                 current.filter((req) => req.id !== updatedRequest.id)
               )
@@ -66,7 +64,10 @@ export function QueueClient({ initialRequests }: QueueClientProps) {
 
     // Cleanup subscription on unmount
     return () => {
-      supabase.removeChannel(channel)
+      if (channelRef.current) {
+        supabaseClient.removeChannel(channelRef.current)
+        channelRef.current = null
+      }
     }
   }, [])
 
@@ -94,10 +95,10 @@ export function QueueClient({ initialRequests }: QueueClientProps) {
 
   // Split requests into pending and auto-confirmed
   const pendingRequests = requests.filter(
-    (req) => (req.status === 'pending' || req.status === 'needs_callback') && req.confidence_score < 0.85
+    (req) => req.status === 'pending' || req.status === 'needs_callback'
   )
   const autoConfirmedRequests = requests.filter(
-    (req) => req.status === 'auto_confirmed' || req.confidence_score >= 0.85
+    (req) => req.status === 'auto_confirmed'
   )
 
   return (
