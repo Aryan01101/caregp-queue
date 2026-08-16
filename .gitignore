@@ -43,5 +43,6 @@ next-env.d.ts
 
 # local configuration and internal docs
 .claude/
+.claude-flow/
 CLAUDE.md
 PRD.md
