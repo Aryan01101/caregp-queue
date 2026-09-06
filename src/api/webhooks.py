@@ -219,18 +219,44 @@ async def whatsapp_webhook(message: WhatsAppMessage) -> Dict[str, Any]:
             logger.warning(f"Unknown reviewer: {reviewer_phone}")
             return {"success": False, "error": "Unknown reviewer"}
 
-        # For now, find most recent draft across all threads
-        # TODO: Use Context field for proper reply-to-quote disambiguation
-        # This is a simplification - in production, track which draft the WhatsApp message was about
+        # Find the draft this message is responding to
+        # Strategy: Look for most recent pending draft for this reviewer
+        # In production, could enhance with Twilio Context field for reply-to-quote
+        draft = await db.get_most_recent_pending_draft()
 
-        logger.info(f"Reviewer action: {action}")
+        if not draft:
+            logger.warning(f"No pending drafts found for reviewer response")
+            await whatsapp_service.send_confirmation(
+                reviewer_phone=reviewer_phone,
+                action="help",
+                details="No pending drafts found. All caught up!",
+            )
+            return {"success": False, "error": "No pending drafts"}
+
+        logger.info(
+            f"Reviewer {reviewer['name']} action: {action} on draft {draft['id']}"
+        )
+
+        # Get workflow graph
+        graph = get_workflow_graph()
+        config = {"configurable": {"thread_id": str(draft["thread_id"])}}
 
         # Process based on action
         if action == "approve":
-            # Find thread and resume workflow with approval
-            # TODO: Implement proper draft lookup
-            # For now, we'll create a stub response
+            # Resume workflow with approval action
+            logger.info(f"Approving draft {draft['id']}")
 
+            # Update state with reviewer action
+            updated_state = {
+                "reviewer_action": "approve",
+                "draft_id": str(draft["id"]),
+            }
+
+            # Resume workflow from checkpoint
+            # This will trigger process_feedback_node → send_email_node
+            result = await graph.ainvoke(updated_state, config)
+
+            # Send confirmation
             await whatsapp_service.send_confirmation(
                 reviewer_phone=reviewer_phone,
                 action="sent",
@@ -239,14 +265,33 @@ async def whatsapp_webhook(message: WhatsAppMessage) -> Dict[str, Any]:
             return {
                 "success": True,
                 "action": "approved",
-                "message": "Draft approved, email will be sent",
+                "draft_id": draft["id"],
+                "thread_id": draft["thread_id"],
+                "workflow_status": result.get("current_step"),
             }
 
         elif action == "feedback":
-            # Find thread and create redraft state
-            # TODO: Implement proper redraft workflow
-            # For now, stub response
+            # Create redraft state and restart workflow
+            logger.info(f"Requesting redraft for draft {draft['id']}")
 
+            # Get current state from checkpoint
+            state_snapshot = await graph.aget_state(config)
+            existing_state = state_snapshot.values
+
+            # Create redraft state with feedback
+            redraft_state = create_redraft_state(
+                existing_state=existing_state,
+                reviewer_feedback=feedback_text,
+            )
+
+            # Mark old draft as rejected (replaced by new version)
+            await db.update_draft_status(UUID(draft["id"]), "rejected")
+
+            # Invoke workflow with redraft state
+            # This will: draft_reply → send_to_reviewer → END (interrupt)
+            result = await graph.ainvoke(redraft_state, config)
+
+            # Send confirmation
             await whatsapp_service.send_confirmation(
                 reviewer_phone=reviewer_phone,
                 action="redrafting",
@@ -256,13 +301,32 @@ async def whatsapp_webhook(message: WhatsAppMessage) -> Dict[str, Any]:
             return {
                 "success": True,
                 "action": "feedback",
-                "message": "Feedback received, will redraft",
+                "old_draft_id": draft["id"],
+                "new_version": redraft_state["version_number"],
+                "thread_id": draft["thread_id"],
+                "workflow_status": result.get("current_step"),
             }
 
         elif action == "reject":
-            # Mark draft as rejected
-            # TODO: Implement proper rejection handling
+            # Mark draft and thread as rejected
+            logger.info(f"Rejecting draft {draft['id']}")
 
+            # Update draft status
+            await db.update_draft_status(UUID(draft["id"]), "rejected")
+
+            # Update thread status
+            await db.update_thread_status(UUID(draft["thread_id"]), "rejected")
+
+            # Log event
+            await db.log_event(
+                event_type="draft_rejected",
+                actor=f"reviewer:{reviewer['id']}",
+                details={"draft_id": draft["id"]},
+                thread_id=UUID(draft["thread_id"]),
+                draft_id=UUID(draft["id"]),
+            )
+
+            # Send confirmation
             await whatsapp_service.send_confirmation(
                 reviewer_phone=reviewer_phone,
                 action="rejected",
@@ -271,7 +335,8 @@ async def whatsapp_webhook(message: WhatsAppMessage) -> Dict[str, Any]:
             return {
                 "success": True,
                 "action": "rejected",
-                "message": "Draft rejected",
+                "draft_id": draft["id"],
+                "thread_id": draft["thread_id"],
             }
 
         return {"success": True}
