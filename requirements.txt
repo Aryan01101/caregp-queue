@@ -1,0 +1,37 @@
+# Hermes v2 - AI Communications Agent
+# Python 3.11+
+
+# Web Framework
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.10.0
+pydantic-settings==2.6.0
+
+# LangGraph & LLM
+langgraph==0.2.50
+langgraph-checkpoint-postgres==2.0.8
+anthropic==0.39.0
+
+# Database
+supabase==2.10.0
+psycopg2-binary==2.9.10
+asyncpg==0.30.0
+
+# Email
+sendgrid==6.11.0
+python-multipart==0.0.18
+
+# WhatsApp
+twilio==9.4.0
+
+# Utilities
+python-dotenv==1.0.1
+httpx==0.28.1
+email-reply-parser==0.5.12
+
+# Development
+pytest==8.3.4
+pytest-asyncio==0.25.0
+black==24.10.0
+mypy==1.13.0
+ruff==0.8.3
