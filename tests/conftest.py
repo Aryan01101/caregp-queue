@@ -214,6 +214,29 @@ def mock_sendgrid():
         yield mock
 
 
+@pytest.fixture(autouse=True)
+def mock_postgres_checkpointer():
+    """Mock PostgresSaver to prevent real database connections in tests."""
+    with patch("src.workflows.graph.psycopg.connect") as mock_connect:
+        # Mock connection
+        mock_conn = MagicMock()
+        mock_connect.return_value = mock_conn
+
+        # Mock PostgresSaver with async methods
+        with patch("src.workflows.graph.PostgresSaver") as mock_saver:
+            mock_checkpointer = MagicMock()
+            mock_checkpointer.setup = MagicMock()
+
+            # Mock async methods used by LangGraph
+            mock_checkpointer.aget_tuple = AsyncMock(return_value=None)
+            mock_checkpointer.aput = AsyncMock()
+            mock_checkpointer.alist = AsyncMock(return_value=[])
+
+            mock_saver.return_value = mock_checkpointer
+
+            yield mock_checkpointer
+
+
 @pytest.fixture
 def mock_all_services(mock_anthropic, mock_twilio, mock_sendgrid):
     """Convenience fixture to mock all external services."""

@@ -4,12 +4,13 @@ import logging
 from typing import Any, Dict
 from uuid import UUID
 
-from fastapi import APIRouter, Form, HTTPException, Request
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Request, Response
+from pydantic import BaseModel, ValidationError
+from twilio.request_validator import RequestValidator
 
+from src.core.config import get_settings
 from src.services.database import get_database
 from src.services.email import get_email_service
-from src.services.llm import get_llm_service
 from src.services.whatsapp import get_whatsapp_service
 from src.workflows.graph import get_workflow_graph
 from src.workflows.state import create_initial_state, create_redraft_state
@@ -163,12 +164,48 @@ class WhatsAppMessage(BaseModel):
     To: str
     Body: str
     MessageSid: str
-    # For reply-to-quote disambiguation
-    Context: Dict[str, str] | None = None
+    OriginalRepliedMessageSid: str | None = None
 
 
-@router.post("/whatsapp")
-async def whatsapp_webhook(message: WhatsAppMessage) -> Dict[str, Any]:
+async def parse_whatsapp_message(request: Request) -> tuple[WhatsAppMessage, bool]:
+    """Parse a Twilio form webhook or a JSON request used by local tests."""
+    content_type = request.headers.get("content-type", "")
+    is_twilio_form = "application/x-www-form-urlencoded" in content_type
+
+    if is_twilio_form:
+        form_data = dict(await request.form())
+        settings = get_settings()
+        signature = request.headers.get("x-twilio-signature")
+
+        if settings.environment == "production":
+            validator = RequestValidator(settings.twilio_auth_token)
+            if not signature or not validator.validate(
+                str(request.url), form_data, signature
+            ):
+                raise HTTPException(status_code=403, detail="Invalid Twilio signature")
+
+        payload = form_data
+    else:
+        try:
+            payload = await request.json()
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="Invalid webhook payload") from exc
+
+    try:
+        return WhatsAppMessage.model_validate(payload), is_twilio_form
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+
+
+def whatsapp_response(payload: Dict[str, Any], is_twilio_form: bool) -> Dict[str, Any] | Response:
+    """Return TwiML to Twilio while keeping JSON responses for local API tests."""
+    if is_twilio_form:
+        return Response(content="<Response/>", media_type="application/xml")
+    return payload
+
+
+@router.post("/whatsapp", response_model=None)
+async def whatsapp_webhook(request: Request) -> Dict[str, Any] | Response:
     """
     Receive incoming WhatsApp messages from Twilio.
 
@@ -184,6 +221,7 @@ async def whatsapp_webhook(message: WhatsAppMessage) -> Dict[str, Any]:
         Dict[str, Any]: Webhook response
     """
     try:
+        message, is_twilio_form = await parse_whatsapp_message(request)
         logger.info(f"Received WhatsApp from {message.From}: {message.Body}")
 
         # Get services
@@ -198,40 +236,53 @@ async def whatsapp_webhook(message: WhatsAppMessage) -> Dict[str, Any]:
         if action == "unknown":
             # Send help message
             await whatsapp_service.send_confirmation(
-                reviewer_phone=message.From.replace("whatsapp:", ""),
+                reviewer_phone=message.From.removeprefix("whatsapp:"),
                 action="help",
                 details="Please reply with: APPROVE, FEEDBACK: [text], or REJECT",
             )
-            return {"success": True, "message": "Unknown action, help sent"}
-
-        # Find the most recent pending draft
-        # In production, use Context field to find specific draft if reply-to-quote is available
-        # For now, we'll find by most recent pending draft
+            return whatsapp_response(
+                {"success": True, "message": "Unknown action, help sent"}, is_twilio_form
+            )
 
         # Extract reviewer phone number
-        reviewer_phone = message.From.replace("whatsapp:", "")
+        reviewer_phone = message.From.removeprefix("whatsapp:")
 
         # Get all active reviewers to find reviewer ID
         reviewers = await db.get_active_reviewers()
-        reviewer = next((r for r in reviewers if r["phone_number"] == reviewer_phone), None)
+        reviewer = next(
+            (
+                r
+                for r in reviewers
+                if r["phone_number"].removeprefix("whatsapp:") == reviewer_phone
+            ),
+            None,
+        )
 
         if not reviewer:
             logger.warning(f"Unknown reviewer: {reviewer_phone}")
-            return {"success": False, "error": "Unknown reviewer"}
+            return whatsapp_response(
+                {"success": False, "error": "Unknown reviewer"}, is_twilio_form
+            )
 
-        # Find the draft this message is responding to
-        # Strategy: Look for most recent pending draft for this reviewer
-        # In production, could enhance with Twilio Context field for reply-to-quote
-        draft = await db.get_most_recent_pending_draft()
+        # Prefer Twilio's quote-reply SID; use the newest pending draft only for
+        # bare replies that do not include one.
+        if message.OriginalRepliedMessageSid:
+            draft = await db.get_draft_by_whatsapp_sid(
+                message.OriginalRepliedMessageSid
+            )
+        else:
+            draft = await db.get_most_recent_pending_draft()
 
-        if not draft:
+        if not draft or draft["status"] != "pending":
             logger.warning(f"No pending drafts found for reviewer response")
             await whatsapp_service.send_confirmation(
                 reviewer_phone=reviewer_phone,
                 action="help",
                 details="No pending drafts found. All caught up!",
             )
-            return {"success": False, "error": "No pending drafts"}
+            return whatsapp_response(
+                {"success": False, "error": "No pending drafts"}, is_twilio_form
+            )
 
         logger.info(
             f"Reviewer {reviewer['name']} action: {action} on draft {draft['id']}"
@@ -250,6 +301,7 @@ async def whatsapp_webhook(message: WhatsAppMessage) -> Dict[str, Any]:
             updated_state = {
                 "reviewer_action": "approve",
                 "draft_id": str(draft["id"]),
+                "reviewer_phone": reviewer_phone,
             }
 
             # Resume workflow from checkpoint
@@ -262,13 +314,16 @@ async def whatsapp_webhook(message: WhatsAppMessage) -> Dict[str, Any]:
                 action="sent",
             )
 
-            return {
-                "success": True,
-                "action": "approved",
-                "draft_id": draft["id"],
-                "thread_id": draft["thread_id"],
-                "workflow_status": result.get("current_step"),
-            }
+            return whatsapp_response(
+                {
+                    "success": True,
+                    "action": "approved",
+                    "draft_id": draft["id"],
+                    "thread_id": draft["thread_id"],
+                    "workflow_status": result.get("current_step"),
+                },
+                is_twilio_form,
+            )
 
         elif action == "feedback":
             # Create redraft state and restart workflow
@@ -298,14 +353,17 @@ async def whatsapp_webhook(message: WhatsAppMessage) -> Dict[str, Any]:
                 details=feedback_text,
             )
 
-            return {
-                "success": True,
-                "action": "feedback",
-                "old_draft_id": draft["id"],
-                "new_version": redraft_state["version_number"],
-                "thread_id": draft["thread_id"],
-                "workflow_status": result.get("current_step"),
-            }
+            return whatsapp_response(
+                {
+                    "success": True,
+                    "action": "feedback",
+                    "old_draft_id": draft["id"],
+                    "new_version": redraft_state["version_number"],
+                    "thread_id": draft["thread_id"],
+                    "workflow_status": result.get("current_step"),
+                },
+                is_twilio_form,
+            )
 
         elif action == "reject":
             # Mark draft and thread as rejected
@@ -315,11 +373,11 @@ async def whatsapp_webhook(message: WhatsAppMessage) -> Dict[str, Any]:
             await db.update_draft_status(UUID(draft["id"]), "rejected")
 
             # Update thread status
-            await db.update_thread_status(UUID(draft["thread_id"]), "rejected")
+            await db.update_thread_status(UUID(draft["thread_id"]), "resolved")
 
             # Log event
             await db.log_event(
-                event_type="draft_rejected",
+                event_type="reviewer_action",
                 actor=f"reviewer:{reviewer['id']}",
                 details={"draft_id": draft["id"]},
                 thread_id=UUID(draft["thread_id"]),
@@ -332,15 +390,20 @@ async def whatsapp_webhook(message: WhatsAppMessage) -> Dict[str, Any]:
                 action="rejected",
             )
 
-            return {
-                "success": True,
-                "action": "rejected",
-                "draft_id": draft["id"],
-                "thread_id": draft["thread_id"],
-            }
+            return whatsapp_response(
+                {
+                    "success": True,
+                    "action": "rejected",
+                    "draft_id": draft["id"],
+                    "thread_id": draft["thread_id"],
+                },
+                is_twilio_form,
+            )
 
-        return {"success": True}
+        return whatsapp_response({"success": True}, is_twilio_form)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"WhatsApp webhook error: {e}", exc_info=True)
         raise HTTPException(
@@ -361,5 +424,5 @@ async def whatsapp_webhook_info() -> Dict[str, str]:
         "endpoint": "/webhooks/whatsapp",
         "method": "POST",
         "description": "Twilio WhatsApp webhook for receiving reviewer responses",
-        "expected_fields": "From, To, Body, MessageSid, Context (for reply-to-quote)",
+        "expected_fields": "From, To, Body, MessageSid, OriginalRepliedMessageSid",
     }

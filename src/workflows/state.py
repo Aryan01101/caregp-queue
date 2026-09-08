@@ -37,6 +37,7 @@ class EmailTriageState(TypedDict):
 
     # WhatsApp review
     whatsapp_message_sid: str | None
+    reviewer_phone: str | None
     reviewer_action: Literal["approve", "feedback", "reject"] | None
     reviewer_feedback: str | None
 
@@ -111,6 +112,7 @@ def create_initial_state(
         overall_confidence=0.0,
         # WhatsApp review
         whatsapp_message_sid=None,
+        reviewer_phone=None,
         reviewer_action=None,
         reviewer_feedback=None,
         # Workflow control

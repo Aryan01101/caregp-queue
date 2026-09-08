@@ -1,10 +1,8 @@
-"""LLM service for Claude API integration."""
+"""LLM service for multi-provider LLM integration (Anthropic Claude & Google Gemini)."""
 
 import json
 import logging
 from typing import Dict, List, Optional
-
-from anthropic import Anthropic
 
 from src.core.config import get_settings
 
@@ -12,13 +10,34 @@ logger = logging.getLogger(__name__)
 
 
 class LLMService:
-    """Service for interacting with Claude API."""
+    """Service for interacting with LLM APIs (Anthropic or Gemini)."""
 
     def __init__(self) -> None:
-        """Initialize LLM service with Anthropic client."""
+        """Initialize LLM service with configured provider."""
         settings = get_settings()
-        self.client = Anthropic(api_key=settings.anthropic_api_key)
-        self.model = settings.claude_model
+        self.provider = settings.llm_provider.lower()
+
+        if self.provider == "anthropic":
+            from anthropic import Anthropic
+
+            if not settings.anthropic_api_key:
+                raise ValueError("ANTHROPIC_API_KEY required when llm_provider=anthropic")
+            self.client = Anthropic(api_key=settings.anthropic_api_key)
+            self.model = settings.claude_model
+            logger.info(f"Initialized Anthropic client with model {self.model}")
+
+        elif self.provider == "gemini":
+            import google.generativeai as genai
+
+            if not settings.gemini_api_key:
+                raise ValueError("GEMINI_API_KEY required when llm_provider=gemini")
+            genai.configure(api_key=settings.gemini_api_key)
+            self.client = genai.GenerativeModel(settings.gemini_model)
+            self.model = settings.gemini_model
+            logger.info(f"Initialized Gemini client with model {self.model}")
+
+        else:
+            raise ValueError(f"Unknown llm_provider: {self.provider}. Must be 'anthropic' or 'gemini'")
 
     # =========================================================================
     # Intent Extraction
@@ -69,16 +88,14 @@ Email:
             if previous_context:
                 user_message += f"\n\nPrevious context:\n{previous_context}"
 
-            # Call Claude API
-            response = self.client.messages.create(
-                model=self.model,
+            # Call LLM API
+            response_data = await self._call_llm(
+                system_prompt=system_prompt,
+                user_message=user_message,
                 max_tokens=1000,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_message}],
             )
 
-            # Parse response
-            content = response.content[0].text
+            content = response_data["content"]
 
             # Try to parse as JSON
             try:
@@ -95,10 +112,7 @@ Email:
             return {
                 "success": True,
                 "intent": intent_data,
-                "usage": {
-                    "input_tokens": response.usage.input_tokens,
-                    "output_tokens": response.usage.output_tokens,
-                },
+                "usage": response_data.get("usage", {}),
             }
 
         except Exception as e:
@@ -164,16 +178,14 @@ Intent analysis:
                 user_message += f"\n\nFeedback:\n{feedback}"
                 user_message += "\n\nPlease incorporate the feedback and improve the draft."
 
-            # Call Claude API
-            response = self.client.messages.create(
-                model=self.model,
+            # Call LLM API
+            response_data = await self._call_llm(
+                system_prompt=system_prompt,
+                user_message=user_message,
                 max_tokens=2000,
-                system=system_prompt,
-                messages=[{"role": "user", "content": user_message}],
             )
 
-            # Parse response
-            content = response.content[0].text
+            content = response_data["content"]
 
             # Try to extract confidence score if provided
             confidence = self._extract_confidence(content)
@@ -186,10 +198,7 @@ Intent analysis:
                     "content": content,
                     "confidence": confidence,
                 },
-                "usage": {
-                    "input_tokens": response.usage.input_tokens,
-                    "output_tokens": response.usage.output_tokens,
-                },
+                "usage": response_data.get("usage", {}),
             }
 
         except Exception as e:
@@ -236,6 +245,57 @@ Intent analysis:
 
         # Default medium confidence if not found
         return 0.7
+
+    # =========================================================================
+    # Provider-Agnostic LLM Call
+    # =========================================================================
+
+    async def _call_llm(
+        self,
+        system_prompt: str,
+        user_message: str,
+        max_tokens: int = 1000,
+    ) -> Dict[str, any]:
+        """
+        Call the configured LLM provider.
+
+        Args:
+            system_prompt: System instructions
+            user_message: User message
+            max_tokens: Maximum tokens to generate
+
+        Returns:
+            Dict with 'content' and optional 'usage' keys
+        """
+        if self.provider == "anthropic":
+            response = self.client.messages.create(
+                model=self.model,
+                max_tokens=max_tokens,
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_message}],
+            )
+            return {
+                "content": response.content[0].text,
+                "usage": {
+                    "input_tokens": response.usage.input_tokens,
+                    "output_tokens": response.usage.output_tokens,
+                },
+            }
+
+        elif self.provider == "gemini":
+            # Gemini uses a combined prompt format
+            combined_prompt = f"{system_prompt}\n\n{user_message}"
+            response = self.client.generate_content(
+                combined_prompt,
+                generation_config={"max_output_tokens": max_tokens},
+            )
+            return {
+                "content": response.text,
+                "usage": {},  # Gemini doesn't expose usage stats in the same way
+            }
+
+        else:
+            raise ValueError(f"Unknown provider: {self.provider}")
 
     # =========================================================================
     # Confidence Scoring

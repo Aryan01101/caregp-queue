@@ -337,6 +337,16 @@ Commands:
 
 Run these tests after deployment to verify production environment:
 
+Start with the safe, read-only checks:
+
+```bash
+bash scripts/check_live_connectivity.sh https://your-production-url.com
+```
+
+The webhook `POST` examples below create production records and may send a real
+WhatsApp notification. Run them only after the public domain, SendGrid, and
+Twilio configuration are confirmed.
+
 ### 1. Health Check
 
 ```bash
@@ -372,8 +382,15 @@ Subject: Test'
 
 ### 3. Twilio WhatsApp Webhook
 
+Twilio sends `application/x-www-form-urlencoded` data and production verifies
+its `X-Twilio-Signature`; configure the callback in Twilio and test by replying
+to an actual WhatsApp draft. Do not send an unsigned `curl` request to the
+production endpoint.
+
+For local development only, the JSON request below remains supported:
+
 ```bash
-curl -X POST https://your-production-url.com/webhooks/whatsapp \
+curl -X POST http://localhost:8000/webhooks/whatsapp \
   -H "Content-Type: application/json" \
   -d '{
     "From": "whatsapp:+1234567890",

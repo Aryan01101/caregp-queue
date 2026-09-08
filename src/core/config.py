@@ -28,11 +28,30 @@ class Settings(BaseSettings):
     supabase_service_role_key: str = Field(..., description="Supabase service role key")
     database_url: str = Field(..., description="Direct Postgres connection string")
 
-    # LLM (Anthropic Claude)
-    anthropic_api_key: str = Field(..., description="Anthropic API key")
+    # LLM Configuration
+    llm_provider: str = Field(
+        default="gemini",
+        description="LLM provider to use (anthropic or gemini)",
+    )
+
+    # Anthropic Claude (optional if using Gemini)
+    anthropic_api_key: Optional[str] = Field(
+        default=None,
+        description="Anthropic API key (required if llm_provider=anthropic)",
+    )
     claude_model: str = Field(
-        default="claude-3-5-sonnet-20241022",
+        default="claude-3-haiku-20240307",
         description="Claude model for extraction and drafting",
+    )
+
+    # Google Gemini
+    gemini_api_key: Optional[str] = Field(
+        default=None,
+        description="Google Gemini API key (required if llm_provider=gemini)",
+    )
+    gemini_model: str = Field(
+        default="gemini-3.6-flash",
+        description="Gemini model for extraction and drafting",
     )
 
     # Email (SendGrid)

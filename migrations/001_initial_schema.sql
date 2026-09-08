@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS threads (
     -- Thread matching uses References/In-Reply-To headers, not subject
     message_id TEXT UNIQUE NOT NULL, -- Primary Message-ID from first email
     in_reply_to TEXT, -- For thread continuity
-    references TEXT[], -- Array of all References header values
+    "references" TEXT[], -- Array of all References header values (quoted - SQL keyword)
     status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'pending_review', 'resolved')),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()

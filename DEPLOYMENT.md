@@ -37,15 +37,28 @@ Railway provides the simplest deployment experience for Python/FastAPI apps with
    - Wait ~2-3 minutes for build
    - Get URL: `https://hermes-production.up.railway.app`
 
-5. **Test**: `curl https://your-app.railway.app/health`
+5. **Generate a public domain** in Railway: Service → Settings → Networking → **Generate Domain**. The `*.railway.internal` address is private and cannot receive SendGrid or Twilio webhooks.
+6. **Test**: `bash scripts/check_live_connectivity.sh https://your-app.railway.app`
 
 ## 🔧 Post-Deployment Setup
 
 ### Configure SendGrid Webhook
-- URL: `https://your-app.railway.app/webhooks/sendgrid/inbound`
+- URL: `https://your-app.railway.app/webhooks/email`
+- If customers currently write to Outlook, create an Outlook forwarding rule to
+  the address on the domain configured in SendGrid Inbound Parse. Receiving a
+  message in Outlook alone does not call this webhook.
+- Configure that Inbound Parse domain's MX records with SendGrid before relying
+  on the forwarding rule.
 
 ### Configure Twilio WhatsApp
-- URL: `https://your-app.railway.app/webhooks/twilio/whatsapp`
+- URL: `https://your-app.railway.app/webhooks/whatsapp`
+- Set the webhook method to `POST`.
+
+### Production Variables
+- Copy every required variable from `.env` into Railway's **Variables** tab,
+  without copying the `.env` file itself.
+- Set `ENVIRONMENT=production` in Railway. The local file is intentionally set
+  to `development`.
 
 ### Update Reviewer Phone
 - Replace test number with your real WhatsApp number in database

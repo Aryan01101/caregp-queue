@@ -113,6 +113,18 @@ class DatabaseService:
         )
         return response.data[0] if response.data else None
 
+    async def get_most_recent_pending_draft(self) -> Optional[Dict[str, Any]]:
+        """Return the newest draft that is awaiting reviewer action."""
+        response = (
+            self.client.table("drafts")
+            .select("*")
+            .eq("status", "pending")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        return response.data[0] if response.data else None
+
     async def mark_drafts_stale(self, thread_id: UUID) -> int:
         """Mark all pending drafts as stale (trailing email edge case)."""
         response = (
@@ -128,6 +140,18 @@ class DatabaseService:
         """Update draft status."""
         response = (
             self.client.table("drafts").update({"status": status}).eq("id", str(draft_id)).execute()
+        )
+        return response.data[0] if response.data else {}
+
+    async def update_draft_whatsapp_message_sid(
+        self, draft_id: UUID, whatsapp_message_sid: str
+    ) -> Dict[str, Any]:
+        """Attach the Twilio SID to an existing draft for quote-reply matching."""
+        response = (
+            self.client.table("drafts")
+            .update({"whatsapp_message_sid": whatsapp_message_sid})
+            .eq("id", str(draft_id))
+            .execute()
         )
         return response.data[0] if response.data else {}
 

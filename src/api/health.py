@@ -2,6 +2,7 @@
 
 from typing import Dict
 
+import psycopg
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
@@ -43,9 +44,7 @@ async def readiness_check() -> Dict[str, str]:
     """
     Readiness check for Kubernetes/Cloud Run.
 
-    Verifies:
-    - Database connection is working
-    - All required services are reachable
+    Verifies the Supabase API and direct PostgreSQL connection used by LangGraph.
 
     Returns:
         Dict[str, str]: Readiness status
@@ -54,8 +53,14 @@ async def readiness_check() -> Dict[str, str]:
     db = get_database()
 
     try:
-        # Test database connection by querying reviewers table
-        reviewers = await db.get_active_reviewers()
+        # Verify the Supabase API connection.
+        await db.get_active_reviewers()
+
+        # LangGraph checkpoints use a direct psycopg connection, not the
+        # Supabase API client. Check it here so readiness matches the workflow.
+        with psycopg.connect(settings.database_url, connect_timeout=5) as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT 1")
         db_status = "ready"
     except Exception as e:
         raise HTTPException(

@@ -4,6 +4,7 @@ import logging
 from typing import Dict
 from uuid import UUID
 
+import psycopg
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import END, StateGraph
 
@@ -158,7 +159,7 @@ async def send_to_reviewer_node(state: EmailTriageState) -> Dict:
 
     # Send to first active reviewer (can be enhanced with load balancing)
     reviewer = reviewers[0]
-    reviewer_phone = reviewer["phone_number"]
+    reviewer_phone = reviewer["phone_number"].removeprefix("whatsapp:")
 
     # Send WhatsApp message
     send_result = await whatsapp_service.send_draft_for_review(
@@ -177,13 +178,18 @@ async def send_to_reviewer_node(state: EmailTriageState) -> Dict:
             "error": f"WhatsApp send failed: {send_result.get('error')}",
         }
 
-    # Update draft with WhatsApp SID
-    await db.create_draft(
+    # Attach the WhatsApp SID to the draft record created in draft_reply_node.
+    # Creating another record would violate the (thread_id, version_number) constraint.
+    await db.update_draft_whatsapp_message_sid(
+        UUID(state["draft_id"]), send_result["message_sid"]
+    )
+    await db.update_thread_status(UUID(state["thread_id"]), "pending_review")
+    await db.log_event(
+        event_type="draft_sent_to_whatsapp",
+        actor="system",
+        details={"message_sid": send_result["message_sid"]},
         thread_id=UUID(state["thread_id"]),
-        version_number=state["version_number"],
-        content=state["draft_content"],
-        confidence_score=state["overall_confidence"],
-        whatsapp_message_sid=send_result["message_sid"],
+        draft_id=UUID(state["draft_id"]),
     )
 
     logger.info(f"Draft sent via WhatsApp. SID: {send_result['message_sid']}")
@@ -212,7 +218,7 @@ async def process_feedback_node(state: EmailTriageState) -> Dict:
     # Record reviewer action
     await db.create_reviewer_action(
         draft_id=UUID(state["draft_id"]),
-        reviewer_phone="system",  # Will be updated with actual phone from webhook
+        reviewer_phone=state.get("reviewer_phone") or "unknown",
         action=state["reviewer_action"],
         feedback_text=state.get("reviewer_feedback"),
     )
@@ -281,15 +287,15 @@ async def send_email_node(state: EmailTriageState) -> Dict:
             "error": f"Email send failed: {send_result.get('error')}",
         }
 
-    # Mark draft as sent
-    await db.update_draft_status(UUID(state["draft_id"]), "sent")
+    # The schema uses "approved" as the final successful draft state.
+    await db.update_draft_status(UUID(state["draft_id"]), "approved")
 
     # Update thread status
-    await db.update_thread_status(UUID(state["thread_id"]), "completed")
+    await db.update_thread_status(UUID(state["thread_id"]), "resolved")
 
     # Log event
     await db.log_event(
-        event_type="email_sent",
+        event_type="email_sent_to_customer",
         actor="system",
         details={
             "to": state["customer_email"],
@@ -375,9 +381,9 @@ def create_email_triage_graph(checkpointer: PostgresSaver) -> StateGraph:
     workflow.add_edge("extract_intent", "draft_reply")
     workflow.add_edge("draft_reply", "send_to_reviewer")
 
-    # After sending to reviewer, workflow interrupts
+    # After sending to reviewer, go to process_feedback (interrupts before it)
     # Will be resumed by WhatsApp webhook with reviewer action
-    workflow.add_edge("send_to_reviewer", END)
+    workflow.add_edge("send_to_reviewer", "process_feedback")
 
     # Conditional edge after processing feedback
     workflow.add_conditional_edges(
@@ -413,12 +419,14 @@ def get_workflow_graph():
 
         settings = get_settings()
 
-        # Create Postgres checkpointer
-        _checkpointer_instance = PostgresSaver.from_conn_string(
-            settings.database_url
-        )
+        # Create database connection for checkpointer
+        # Note: Using psycopg connection instead of from_conn_string context manager
+        conn = psycopg.connect(settings.database_url, autocommit=True)
 
-        # Setup checkpoint tables (run once)
+        # Create Postgres checkpointer with connection
+        _checkpointer_instance = PostgresSaver(conn)
+
+        # Setup checkpoint tables (idempotent - safe to call multiple times)
         _checkpointer_instance.setup()
 
         # Create graph
